@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 4.2)
 project(cis565_boids)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -22,7 +22,7 @@ endif()
 ########################################
 # CUDA Setup
 ########################################
-find_package(CUDA 10 REQUIRED)
+enable_language(CUDA)
 include(${CMAKE_MODULE_PATH}/CUDAComputesList.cmake)
 
 list(APPEND CUDA_NVCC_FLAGS ${CUDA_GENERATE_CODE})
@@ -82,9 +82,11 @@ list(SORT sources)
 source_group(Headers FILES ${headers})
 source_group(Sources FILES ${sources})
 
-cuda_add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers})
+add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers})
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
 target_link_libraries(${CMAKE_PROJECT_NAME} ${LIBRARIES})
-
 add_custom_command(
     TARGET ${CMAKE_PROJECT_NAME}
     PRE_BUILD

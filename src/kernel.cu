@@ -223,6 +223,65 @@ void Boids::copyBoidsToVBO(float *vbodptr_positions, float *vbodptr_velocities) 
 * stepSimulation *
 ******************/
 
+//helpers for rules
+//calculate distance between two boids
+__device__ float boid_distance2(const glm::vec3& a, const glm::vec3& b) {
+    glm::vec3 diff = a - b;
+    return glm::dot(diff, diff);
+    //return squared distance to avoid costly sqrt function
+}
+
+__device__ glm::vec3 rule1_cohesion(int N, int iSelf, glm::vec3 *pos) {
+	glm::vec3 center_sum(0.0f);
+	glm::vec3 selfPos = pos[iSelf];
+	int count = 0;
+	float sqDist = rule1Distance * rule1Distance;
+    for (int i = 0; i < N; i++) {
+        if (i == iSelf) continue;
+        if (boid_distance2(selfPos, pos[i]) < sqDist) {
+            center_sum += pos[i];
+            count++;
+        }
+    }
+	if (count == 0) return glm::vec3(0.0f);
+	center_sum = center_sum / (float)count;
+    return (center_sum - selfPos) * rule1Scale;
+}
+
+__device__ glm::vec3 rule2_seperation(int N, int iSelf, glm::vec3 *pos) {
+	glm::vec3 selfPos = pos[iSelf];
+	glm::vec3 c(0.0f);
+    
+    for (int j = 0; j < N; j++) {
+        if (j == iSelf) continue;
+        float sqDist = boid_distance2(selfPos, pos[j]);
+        if (sqDist < rule2Distance * rule2Distance) {
+            c -= (pos[j] - selfPos);
+        }
+	}
+
+	return c * rule2Scale;
+}
+
+__device__ glm::vec3 rule3_alignment(int N, int iSelf, glm::vec3 *vel, glm::vec3 *pos) {
+    glm::vec3 perceived_velocity(0.0f);
+	glm::vec3 selfPos = pos[iSelf];
+	int count = 0;
+    for(int j = 0; j < N; j++) {
+        if (j == iSelf) continue;
+        if (boid_distance2(selfPos, pos[j]) < rule3Distance * rule3Distance) {
+            perceived_velocity += vel[j];
+            count++;
+        }
+	}
+
+	if (count == 0) return glm::vec3(0.0f);
+    perceived_velocity = perceived_velocity / (float)count;
+	return perceived_velocity * rule3Scale;
+
+}
+
+
 /**
 * LOOK-1.2 You can use this as a helper for kernUpdateVelocityBruteForce.
 * __device__ code can be called from a __global__ context
@@ -231,9 +290,10 @@ void Boids::copyBoidsToVBO(float *vbodptr_positions, float *vbodptr_velocities) 
 */
 __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *pos, const glm::vec3 *vel) {
   // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
-  // Rule 2: boids try to stay a distance d away from each other
-  // Rule 3: boids try to match the speed of surrounding boids
-  return glm::vec3(0.0f, 0.0f, 0.0f);
+    return rule1_cohesion(N, iSelf, pos)
+        + rule2_seperation(N, iSelf, pos)
+        + rule3_alignment(N, iSelf, vel, pos);
+
 }
 
 /**
@@ -243,8 +303,23 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
 __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   glm::vec3 *vel1, glm::vec3 *vel2) {
   // Compute a new velocity based on pos and vel1
+  
   // Clamp the speed
   // Record the new velocity into vel2. Question: why NOT vel1?
+    int index = threadIdx.x + (blockIdx.x * blockDim.x);
+    if (index >= N) {
+      return;
+	}
+	glm::vec3 deltavelocity = computeVelocityChange(N, index, pos, vel1);
+	glm::vec3 newVelocity = vel1[index] + deltavelocity;
+
+	float speed = glm::length(newVelocity);
+    if (speed > maxSpeed) {
+        newVelocity = (newVelocity / speed) * maxSpeed;
+    }
+
+	dev_vel2[index] = newVelocity;
+
 }
 
 /**
@@ -349,6 +424,17 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 void Boids::stepSimulationNaive(float dt) {
   // TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
   // TODO-1.2 ping-pong the velocity buffers
+	dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
+
+	kernUpdateVelocityBruteForce <<<fullBlocksPerGrid, blockSize >>> (numObjects, dev_pos, dev_vel1, dev_vel2);
+	checkCUDAErrorWithLine("kernUpdateVelocityBruteForce failed!");
+	kernUpdatePos << <fullBlocksPerGrid, blockSize >> > (numObjects, dt, dev_pos, dev_vel2);
+	checkCUDAErrorWithLine("kernUpdatePos failed!");
+
+    glm::vec3* tmp = dev_vel1;
+	dev_vel1 = dev_vel2;
+	dev_vel2 = tmp;
+
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
